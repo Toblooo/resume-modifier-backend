@@ -1,5 +1,5 @@
 from docx import Document
-from ollama import Client
+import requests
 from docx2pdf import convert
 
 import shutil
@@ -12,34 +12,39 @@ import hashlib
 
 # ================== CONFIGURATION ==================
 MODEL = "llama3.1:8b"
-OLLAMA_URL = "https://influenced-taste-small-off.trycloudflare.com"
-
-ollama_client = Client(
-    host=OLLAMA_URL,
-    headers={
-        "User-Agent": "ollama-client"
-    }
-)
+OLLAMA_URL = "https://main-mechanism-affiliate-recommended.trycloudflare.com"
 
 DELAY_BETWEEN_CALLS = 0.7
 CACHE_FILE = "resume_cache.json"
 # ===================================================
 
+def ollama_chat(prompt, model=MODEL, temperature=0.1, num_predict=300):
+    response = requests.post(
+        f"{OLLAMA_URL}/api/chat",
+        json={
+            "model": model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "options": {
+                "temperature": temperature,
+                "num_predict": num_predict
+            },
+            "stream": False
+        },
+        timeout=120
+    )
+
+    response.raise_for_status()
+    return response.json()
 
 def check_and_pull_model(model_name):
     print(f"Checking remote Ollama: {model_name}")
     try:
-        response = ollama_client.chat(
+        response = ollama_chat(
+            "hi",
             model=model_name,
-            messages=[
-                {
-                    "role": "user",
-                    "content": "hi"
-                }
-            ],
-            options={
-                "num_predict": 5
-            }
+            num_predict=5
         )
         print("Remote Ollama ready")
     except Exception as e:
@@ -74,19 +79,7 @@ JOB DESCRIPTION:
 {job_description}
 """
 
-    response = ollama_client.chat(
-        model=MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        options={
-            "temperature": 0.1,
-            "num_predict": 300
-        }
-    )
+    response = ollama_chat(prompt, model=MODEL, temperature=0.1, num_predict=300)
     return response["message"]["content"].strip()
 
 
@@ -209,22 +202,11 @@ OUTPUT FORMATTING:
 """
 
     try:
-        response = ollama_client.chat(
+        response = ollama_chat(
+            prompt,
             model=MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a strict data processor. You output only the finalized resume string. No conversation, no explanations, no notes."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            options={
-                "temperature": 0.1,
-                "num_predict": 150
-            }
+            temperature=0.1,
+            num_predict=150
         )
 
         new_bullet = response["message"]["content"].strip()
