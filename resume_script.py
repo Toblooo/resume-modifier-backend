@@ -166,8 +166,9 @@ RULES:
 - Maintain the original structural formatting.
 
 OUTPUT FORMATTING:
-- Return ONLY the rewritten skills text. 
-- ABSOLUTELY NO introductory phrases or conversational fillers.
+- Return ONLY the raw rewritten skills text.
+- NEVER explain your changes, add commentary, or include introductory/closing thoughts.
+- CRITICAL: Do NOT write things like "I integrated relevant ATS keywords...".
 """
     else:
         prompt = f"""
@@ -189,8 +190,10 @@ RULES:
 - Ensure perfect grammar and avoid AI-sounding buzzwords.
 
 OUTPUT FORMATTING:
-- Return ONLY the rewritten text without leading bullet characters (-, •, *).
-- ABSOLUTELY NO introductory phrases or conversational fillers.
+- Return ONLY the raw rewritten bullet point text.
+- Do NOT include bullet point characters (like -, •, or *) at the beginning.
+- NEVER explain your changes, add commentary, or include introductory/closing thoughts.
+- CRITICAL: Do NOT write things like "I integrated relevant ATS keywords...".
 """
 
     try:
@@ -200,9 +203,16 @@ OUTPUT FORMATTING:
 
         new_bullet = response["message"]["content"].strip()
 
-        # Clean AI conversational noise
+        # 1. Broadly sweep and eliminate full conversational sentences explaining the integration
+        new_bullet = re.sub(r'(I integrated relevant ATS keywords|I have rewritten this|Here is the rewritten).*?(\n|$)', '', new_bullet, flags=re.IGNORECASE)
+        
+        # 2. Keep the original cleanup sweeps for lines starting with conversational markers
         new_bullet = re.sub(r'^(Here is|Sure|Note:|I have|I\'ve).*?(\n|$)', '', new_bullet, flags=re.IGNORECASE | re.MULTILINE)
+        
+        # Remove empty buffer lines
         new_bullet = "\n".join([line for line in new_bullet.split("\n") if line.strip() != ""])
+        
+        # Strip trailing/leading structural bullet elements
         new_bullet = re.sub(r'^[-•·▪■◆*–—\s]+', '', new_bullet).strip()
 
         if new_bullet:
