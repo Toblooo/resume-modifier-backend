@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.background import BackgroundTasks
+from starlette.background import BackgroundTask  # Changed from BackgroundTasks to single BackgroundTask
 
 import shutil
 import uuid
@@ -23,20 +23,22 @@ CACHE_FILE = "resume_cache.json"
 # =========================
 # CORS CONFIG (Vercel + LOCAL + PRODUCTION)
 # =========================
+# Fixed: Added missing comma between Vercel strings
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://resume-modifier-frontend.vercel.app"
+    "https://resume-modifier-frontend.vercel.app",
     "https://resume-modifier-frontend-o159k8wai-toblooos-projects.vercel.app"
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
+    # Added Content-Length so Vercel can accurately track the file download size
+    expose_headers=["Content-Disposition", "Content-Length"],
 )
 
 # Expanded helper function to clear files and cache after response is sent
@@ -46,8 +48,9 @@ def cleanup_files(*filepaths: str):
         if os.path.exists(path):
             try:
                 os.remove(path)
-            except Exception:
-                pass
+                print(f"Successfully deleted temporary file: {path}")
+            except Exception as e:
+                print(f"Error deleting file {path}: {e}")
                 
     # 2. Force clear the LLM resume cache file if it exists
     if os.path.exists(CACHE_FILE):
@@ -76,7 +79,6 @@ def read_root():
 # =========================
 @app.post("/tailor")
 async def tailor(
-    background_tasks: BackgroundTasks,
     resume: UploadFile = File(...),
     job_description: str = Form(...)
 ):
@@ -111,14 +113,14 @@ async def tailor(
                 detail="Resume generation failed (no output file was created by the AI script)."
             )
 
-        # Trigger background task to clear everything right after the file streams down to Vercel
-        background_tasks.add_task(cleanup_files, input_docx, output_docx)
-
-        # Return file
+        # FIX: We link BackgroundTask directly inside FileResponse.
+        # This explicitly tells FastAPI to finish sending 100% of the document bytes
+        # down to Vercel before triggering the file cleanup.
         return FileResponse(
             path=output_docx,
             filename="tailored_resume.docx",
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            background=BackgroundTask(cleanup_files, input_docx, output_docx)
         )
 
     except Exception as e:
