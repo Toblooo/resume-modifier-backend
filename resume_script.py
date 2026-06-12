@@ -1,53 +1,45 @@
 from docx import Document
-import requests
-
+import httpx  # Changed from requests for async compatibility
 import shutil
 import os
 import re
-import time
+import asyncio
 import json
 import hashlib
 
-
 # ================== CONFIGURATION ==================
 MODEL = "llama3.1:8b"
-OLLAMA_URL = "https://main-mechanism-affiliate-recommended.trycloudflare.com"
-
-DELAY_BETWEEN_CALLS = 0.7
+DELAY_BETWEEN_CALLS = 0.1  # Reduced since async can yield naturally
 CACHE_FILE = "resume_cache.json"
 # ===================================================
 
-def ollama_chat(prompt, model=MODEL, temperature=0.1, num_predict=300):
-    response = requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "options": {
-                "temperature": temperature,
-                "num_predict": num_predict
-            },
-            "stream": False
+# Modified to accept dynamic url via async httpx client
+async def ollama_chat(client, ollama_url, prompt, model=MODEL, temperature=0.1, num_predict=300):
+    base_url = ollama_url.rstrip('/')
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "options": {
+            "temperature": temperature,
+            "num_predict": num_predict
         },
-        timeout=120
-    )
-
+        "stream": False
+    }
+    
+    response = await client.post(f"{base_url}/api/chat", json=payload, timeout=120)
     response.raise_for_status()
     return response.json()
 
-def check_and_pull_model(model_name):
-    print(f"Checking remote Ollama: {model_name}")
+
+async def check_and_pull_model(client, ollama_url, model_name):
+    print(f"Checking remote Ollama model: {model_name}")
     try:
-        response = ollama_chat(
-            "hi",
-            model=model_name,
-            num_predict=5
-        )
+        await ollama_chat(client, ollama_url, "hi", model=model_name, num_predict=5)
         print("Remote Ollama ready")
     except Exception as e:
-        print(f"Ollama connection failed: {e}")
+        print(f"Ollama connection warning: {e}")
 
 
 def load_cache():
@@ -61,15 +53,18 @@ def load_cache():
 
 
 def save_cache(cache):
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=2)
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+    except Exception as e:
+        print(f"Failed to write cache file: {e}")
 
 
 def get_cache_key(text, keywords):
     return hashlib.md5((text + "|" + keywords).encode()).hexdigest()
 
 
-def extract_ats_keywords(job_description):
+async def extract_ats_keywords(client, ollama_url, job_description):
     prompt = f"""
 Extract the 20 most important ATS keywords, hard skills, and phrases.
 Return ONLY comma separated values.
@@ -77,8 +72,7 @@ Return ONLY comma separated values.
 JOB DESCRIPTION:
 {job_description}
 """
-
-    response = ollama_chat(prompt, model=MODEL, temperature=0.1, num_predict=300)
+    response = await ollama_chat(client, ollama_url, prompt, model=MODEL, temperature=0.1, num_predict=300)
     return response["message"]["content"].strip()
 
 
@@ -95,10 +89,13 @@ def is_likely_bullet(text):
         "built", "designed", "optimized", "analyzed", "engineered", 
         "automated", "improved"
     }
-    return text.split()[0].lower() in verbs
+    words = text.split()
+    if words and words[0].lower() in verbs:
+        return True
+    return False
 
 
-def process_paragraph_for_extraction(text, para, section, role, bullets):
+def process_paragraph_for_extraction(text, section, role, bullets):
     if not text:
         return
 
@@ -137,21 +134,20 @@ def extract_bullets_with_context(doc):
             section = text
             continue
 
-        process_paragraph_for_extraction(text, para, section, role, bullets)
+        process_paragraph_for_extraction(text, section, role, bullets)
 
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
-                    process_paragraph_for_extraction(p.text.strip(), p, section, role, bullets)
+                    process_paragraph_for_extraction(p.text.strip(), section, role, bullets)
 
     return bullets
 
 
-def rewrite_single_bullet(bullet, job_keywords, cache):
+async def rewrite_single_bullet(client, ollama_url, bullet, job_keywords, cache):
     cache_key = get_cache_key(bullet["clean"], job_keywords)
     if cache_key in cache:
-        print(" [CACHE HIT]")
         return cache[cache_key]
 
     if bullet.get("is_skills", False):
@@ -171,8 +167,7 @@ RULES:
 
 OUTPUT FORMATTING:
 - Return ONLY the rewritten skills text. 
-- ABSOLUTELY NO introductory phrases (e.g., "Here is the list").
-- ABSOLUTELY NO closing notes (e.g., "Note: I integrated...").
+- ABSOLUTELY NO introductory phrases or conversational fillers.
 """
     else:
         prompt = f"""
@@ -194,35 +189,26 @@ RULES:
 - Ensure perfect grammar and avoid AI-sounding buzzwords.
 
 OUTPUT FORMATTING:
-- Return ONLY the rewritten text.
-- Do NOT include bullet point characters (like -, •, or *) at the beginning. 
-- ABSOLUTELY NO introductory phrases (e.g., "Here is the rewritten bullet").
-- ABSOLUTELY NO notes, explanations, or postscripts (e.g., "Note: I have added...").
+- Return ONLY the rewritten text without leading bullet characters (-, •, *).
+- ABSOLUTELY NO introductory phrases or conversational fillers.
 """
 
     try:
-        response = ollama_chat(
-            prompt,
-            model=MODEL,
-            temperature=0.1,
-            num_predict=150
+        response = await ollama_chat(
+            client, ollama_url, prompt, model=MODEL, temperature=0.1, num_predict=150
         )
 
         new_bullet = response["message"]["content"].strip()
 
-        # Forcefully strip conversational AI filler using regex
+        # Clean AI conversational noise
         new_bullet = re.sub(r'^(Here is|Sure|Note:|I have|I\'ve).*?(\n|$)', '', new_bullet, flags=re.IGNORECASE | re.MULTILINE)
-        
-        # Remove empty lines left behind by the regex
         new_bullet = "\n".join([line for line in new_bullet.split("\n") if line.strip() != ""])
-
-        # Strip bullet points at the start
         new_bullet = re.sub(r'^[-•·▪■◆*–—\s]+', '', new_bullet).strip()
 
         if new_bullet:
             cache[cache_key] = new_bullet
-
-        return new_bullet
+            return new_bullet
+        return bullet["clean"]
 
     except Exception as e:
         print(f"Rewrite error: {e}")
@@ -231,32 +217,39 @@ OUTPUT FORMATTING:
 
 def replace_text(paragraph, old, new):
     if paragraph.text.strip() == old:
-        style = paragraph.style
-        paragraph.text = new
-        paragraph.style = style
-        return True
-
+        # Style preservation: Clear existing run text text safely except the first run
+        # This keeps paragraph styles intact.
+        if paragraph.runs:
+            paragraph.runs[0].text = new
+            for run in paragraph.runs[1:]:
+                run.text = ""
+            return True
     return False
 
 
-def tailor_resume(resume_path, job_description, output_docx):
-    print("Starting resume tailoring")
-    check_and_pull_model(MODEL)
+# Main entry point rewritten to support Async invocation from FastAPI
+async def tailor_resume(resume_path, job_description, output_docx, ollama_url):
+    print("Starting async resume tailoring orchestration...")
     cache = load_cache()
+    
+    # Instantiate the asynchronous HTTP pipeline
+    async with httpx.AsyncClient(timeout=150.0) as client:
+        await check_and_pull_model(client, ollama_url, MODEL)
+        
+        doc = Document(resume_path)
+        keywords = await extract_ats_keywords(client, ollama_url, job_description)
+        bullets = extract_bullets_with_context(doc)
 
-    doc = Document(resume_path)
-    keywords = extract_ats_keywords(job_description)
-    bullets = extract_bullets_with_context(doc)
+        changes = {}
+        for bullet in bullets:
+            rewritten = await rewrite_single_bullet(client, ollama_url, bullet, keywords, cache)
+            if rewritten:
+                changes[bullet["original"]] = rewritten
+            await asyncio.sleep(DELAY_BETWEEN_CALLS)
 
-    changes = {}
-    for bullet in bullets:
-        rewritten = rewrite_single_bullet(bullet, keywords, cache)
-        if rewritten:
-            changes[bullet["original"]] = rewritten
-        time.sleep(DELAY_BETWEEN_CALLS)
+        save_cache(cache)
 
-    save_cache(cache)
-
+    # Document writing phase
     shutil.copy2(resume_path, output_docx)
     new_doc = Document(output_docx)
     replaced = 0
@@ -275,9 +268,5 @@ def tailor_resume(resume_path, job_description, output_docx):
                             replaced += 1
 
     new_doc.save(output_docx)
-    
-        
-    time.sleep(1)
-
-    print(f"Finished. Replaced {replaced} items")
+    print(f"Finished processing document structure. Replaced {replaced} structural objects.")
     return output_docx
