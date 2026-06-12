@@ -1,6 +1,5 @@
 from docx import Document
 import requests
-from docx2pdf import convert
 
 import shutil
 import os
