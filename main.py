@@ -18,6 +18,7 @@ os.makedirs("uploads", exist_ok=True)
 
 # Fetch your local Ollama tunnel URL from Render's Environment Variables
 LOCAL_AI_URL = os.environ.get("LOCAL_AI_URL")
+CACHE_FILE = "resume_cache.json"
 
 # =========================
 # CORS CONFIG (Vercel + LOCAL + PRODUCTION)
@@ -37,14 +38,23 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-# Helper function to clear files after response is sent
+# Expanded helper function to clear files and cache after response is sent
 def cleanup_files(*filepaths: str):
+    # 1. Clean up requested filepaths (input and output .docx files)
     for path in filepaths:
         if os.path.exists(path):
             try:
                 os.remove(path)
             except Exception:
                 pass
+                
+    # 2. Force clear the LLM resume cache file if it exists
+    if os.path.exists(CACHE_FILE):
+        try:
+            os.remove(CACHE_FILE)
+            print("Successfully cleared resume_cache.json")
+        except Exception as e:
+            print(f"Failed to clear cache file: {e}")
 
 # =========================
 # HEALTH CHECK (useful for Render)
@@ -86,7 +96,6 @@ async def tailor(
             shutil.copyfileobj(resume.file, f)
 
         # Run AI tailoring logic passing the tunnel URL
-        # NOTE: Added 'await' as network calling functions to your LLM should be asynchronous
         await tailor_resume(
             input_docx,
             job_description,
@@ -101,7 +110,7 @@ async def tailor(
                 detail="Resume generation failed (no output file was created by the AI script)."
             )
 
-        # File triggers a background task to delete itself right after it finishes sending
+        # Trigger background task to clear everything right after the file streams down to Vercel
         background_tasks.add_task(cleanup_files, input_docx, output_docx)
 
         # Return file
