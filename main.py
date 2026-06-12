@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import shutil
@@ -10,17 +10,21 @@ from resume_script import tailor_resume
 
 app = FastAPI()
 
-# FIX 1: Automatically create the uploads directory if it doesn't exist
 os.makedirs("uploads", exist_ok=True)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], # Explicitly name them
-    allow_credentials=True, # Now this is allowed safely
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
+
+@app.get("/")
+def read_root():
+    return RedirectResponse(url="/docs")
+
 
 @app.post("/tailor")
 async def tailor(
@@ -31,32 +35,35 @@ async def tailor(
 
     input_docx = f"uploads/{session}.docx"
     output_docx = f"uploads/{session}_tailored.docx"
-    output_pdf = f"uploads/{session}_tailored.pdf"
 
-    # FIX 4: Wrap in try/except so Python errors are caught and returned safely
     try:
-        # Save the uploaded file
+        # Save uploaded resume
         with open(input_docx, "wb") as f:
             shutil.copyfileobj(resume.file, f)
 
-        # Run your processing script
+        # Run resume processing (NOW ONLY DOCX OUTPUT)
         tailor_resume(
             input_docx,
             job_description,
-            output_docx,
-            output_pdf
+            output_docx
         )
 
-        # Verify the script actually generated the file before trying to send it
-        if not os.path.exists(output_pdf):
-            raise HTTPException(status_code=500, detail="The resume script failed to generate the PDF file.")
+        # Ensure file exists
+        if not os.path.exists(output_docx):
+            raise HTTPException(
+                status_code=500,
+                detail="Resume script failed to generate DOCX file."
+            )
 
+        # ✅ RETURN DOCX INSTEAD OF PDF
         return FileResponse(
-            output_pdf,
-            filename="tailored_resume.pdf",
-            media_type="application/pdf"
+            output_docx,
+            filename="tailored_resume.docx",
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
 
     except Exception as e:
-        # This forces FastAPI to send a clean JSON error, preserving your CORS headers
-        raise HTTPException(status_code=500, detail=f"Backend Error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Backend Error: {str(e)}"
+        )
