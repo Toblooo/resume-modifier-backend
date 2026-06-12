@@ -27,6 +27,7 @@ ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "https://resume-modifier-frontend.vercel.app"
+    "https://resume-modifier-frontend-o159k8wai-toblooos-projects.vercel.app"
 ]
 
 app.add_middleware(
